@@ -40,6 +40,10 @@ LC_ActionDrawWall::LC_ActionDrawWall(LC_ActionContext* actionContext)
     m_options.isClosed = false;
 }
 
+RS2::ActionType LC_ActionDrawWall::rtti() const {
+    return RS2::ActionDrawWall;
+}
+
 void LC_ActionDrawWall::init(const int status) {
     LC_AbstractActionWithPreview::init(status);
     m_centerlinePoints.clear();
@@ -66,7 +70,7 @@ void LC_ActionDrawWall::updateActionPrompt() {
 }
 
 QStringList LC_ActionDrawWall::getAvailableCommands() {
-    return {"close", "c", "done", "d", "undo", "u", "thickness", "t", "width", "w"};
+    return {"close", "c", "done", "d", "undo", "u", "thickness", "t", "width", "w", "enter", "back", "miter", "miterlimit", "cap"};
 }
 
 bool LC_ActionDrawWall::doProcessCommand(const int status, const QString& command) {
@@ -128,7 +132,59 @@ bool LC_ActionDrawWall::doProcessCommand(const int status, const QString& comman
         return true;
     }
 
-    // 5. Direct numeric expression for thickness (e.g. "200", "15.5", "100/2")
+    // Query bare thickness keyword
+    if (cmd.compare("thickness", Qt::CaseInsensitive) == 0 ||
+        cmd.compare("width", Qt::CaseInsensitive) == 0 ||
+        cmd.compare("t", Qt::CaseInsensitive) == 0 ||
+        cmd.compare("w", Qt::CaseInsensitive) == 0) {
+        commandMessage(tr("Current wall thickness: %1").arg(m_options.thickness));
+        return true;
+    }
+
+    // 5. Miter limit command: "miter <val>", "miterlimit <val>", or bare query
+    if (cmd.startsWith("miterlimit ", Qt::CaseInsensitive) || cmd.startsWith("miter ", Qt::CaseInsensitive)) {
+        const int spaceIdx = cmd.indexOf(' ');
+        const QString miterStr = cmd.mid(spaceIdx + 1).trimmed();
+        bool ok = false;
+        const double val = RS_Math::eval(miterStr, &ok);
+        if (ok && val >= 1.0) {
+            setMiterLimit(val);
+            commandMessage(tr("Wall miter limit set to %1").arg(val));
+        } else {
+            commandMessage(tr("Invalid miter limit expression (must be >= 1.0)"));
+        }
+        return true;
+    }
+    if (cmd.compare("miter", Qt::CaseInsensitive) == 0 || cmd.compare("miterlimit", Qt::CaseInsensitive) == 0) {
+        commandMessage(tr("Current wall miter limit: %1").arg(m_options.miterLimit));
+        return true;
+    }
+
+    // 6. Cap command: "cap flat", "cap none", or bare query
+    if (cmd.startsWith("cap ", Qt::CaseInsensitive)) {
+        const QString capStr = cmd.mid(4).trimmed();
+        if (capStr.compare("flat", Qt::CaseInsensitive) == 0) {
+            setCapType(LC_WallMath::CapType::Flat);
+            commandMessage(tr("Wall cap type set to Flat"));
+        } else if (capStr.compare("none", Qt::CaseInsensitive) == 0) {
+            setCapType(LC_WallMath::CapType::None);
+            commandMessage(tr("Wall cap type set to None"));
+        } else {
+            commandMessage(tr("Invalid cap type (choose 'flat' or 'none')"));
+        }
+        return true;
+    }
+    if (cmd.compare("cap", Qt::CaseInsensitive) == 0) {
+        commandMessage(tr("Current wall cap type: %1").arg(m_options.capType == LC_WallMath::CapType::Flat ? "flat" : "none"));
+        return true;
+    }
+
+    // Leave coordinate input (e.g. "10,20", "@10<45") to event handler rather than scalar evaluator
+    if (cmd.contains(',') || cmd.contains('<') || cmd.contains('@')) {
+        return false;
+    }
+
+    // 7. Direct numeric expression for thickness (e.g. "200", "15.5", "100/2")
     bool ok = false;
     const double val = RS_Math::eval(cmd, &ok);
     if (ok && val > RS_TOLERANCE) {
@@ -173,7 +229,7 @@ void LC_ActionDrawWall::onCoordinateEvent(const int status, [[maybe_unused]] con
             candidate.push_back(coord);
             const auto candidateWall = LC_WallMath::generateWall(candidate, m_options);
             if (!candidateWall.isValid()) {
-                commandMessage(tr("Cannot add point: reversal or hairpin turn angle >= 170 degrees"));
+                commandMessage(tr("Cannot add point: invalid wall geometry (reversal, short segment, or self-intersection)"));
                 return;
             }
 
@@ -415,9 +471,18 @@ void LC_ActionDrawWall::doAfterTrigger() {
 void LC_ActionDrawWall::doSaveOptions() {
     save("Thickness", m_options.thickness);
     save("MiterLimit", m_options.miterLimit);
+    save("CapType", static_cast<int>(m_options.capType));
 }
 
 void LC_ActionDrawWall::doLoadOptions() {
-    m_options.thickness = loadDouble("Thickness", 10.0);
-    m_options.miterLimit = loadDouble("MiterLimit", 2.0);
+    const double t = loadDouble("Thickness", 10.0);
+    m_options.thickness = (std::isfinite(t) && t > RS_TOLERANCE) ? t : 10.0;
+    const double m = loadDouble("MiterLimit", 2.0);
+    m_options.miterLimit = (std::isfinite(m) && m >= 1.0) ? m : 2.0;
+    const int cap = loadInt("CapType", static_cast<int>(LC_WallMath::CapType::Flat));
+    if (cap == static_cast<int>(LC_WallMath::CapType::None) || cap == static_cast<int>(LC_WallMath::CapType::Flat)) {
+        m_options.capType = static_cast<LC_WallMath::CapType>(cap);
+    } else {
+        m_options.capType = LC_WallMath::CapType::Flat;
+    }
 }

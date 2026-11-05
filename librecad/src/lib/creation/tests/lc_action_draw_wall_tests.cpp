@@ -49,6 +49,8 @@ public:
     using LC_ActionDrawWall::completeWall;
     using LC_ActionDrawWall::undoPoint;
     using LC_ActionDrawWall::m_preview;
+    using LC_ActionDrawWall::doSaveOptions;
+    using LC_ActionDrawWall::doLoadOptions;
 };
 
 struct WallActionFixture {
@@ -460,5 +462,76 @@ TEST_CASE("Wall action regression: Short initial segment inner turn is rejected 
     CHECK(action.getCenterlinePoints().size() == 1);
     CHECK(action.getStatus() == LC_ActionDrawWall::SetNextPoint);
 }
+
+TEST_CASE("Wall action regression: RTTI type identification", "[wall][action][regression]") {
+    WallActionFixture fixture;
+    auto& action = *fixture.m_action;
+    CHECK(action.rtti() == RS2::ActionDrawWall);
+}
+
+TEST_CASE("Wall action regression: Command parsing coordinates and bare queries", "[wall][action][regression]") {
+    WallActionFixture fixture;
+    auto& action = *fixture.m_action;
+    action.setThickness(10.0);
+
+    // Coordinate inputs must not be treated as thickness numbers and must return false
+    CHECK_FALSE(action.doProcessCommand(action.getStatus(), "10,20"));
+    CHECK(action.getThickness() == Approx(10.0));
+
+    CHECK_FALSE(action.doProcessCommand(action.getStatus(), "10, 20"));
+    CHECK(action.getThickness() == Approx(10.0));
+
+    CHECK_FALSE(action.doProcessCommand(action.getStatus(), "@50<45"));
+    CHECK(action.getThickness() == Approx(10.0));
+
+    // Bare keyword queries should return true
+    CHECK(action.doProcessCommand(action.getStatus(), "thickness"));
+    CHECK(action.doProcessCommand(action.getStatus(), "width"));
+    CHECK(action.doProcessCommand(action.getStatus(), "t"));
+    CHECK(action.doProcessCommand(action.getStatus(), "w"));
+    CHECK(action.doProcessCommand(action.getStatus(), "miter"));
+    CHECK(action.doProcessCommand(action.getStatus(), "miterlimit"));
+    CHECK(action.doProcessCommand(action.getStatus(), "cap"));
+
+    // Extended commands update options
+    CHECK(action.doProcessCommand(action.getStatus(), "miter 3.5"));
+    CHECK(action.getMiterLimit() == Approx(3.5));
+
+    CHECK(action.doProcessCommand(action.getStatus(), "miterlimit 4.0"));
+    CHECK(action.getMiterLimit() == Approx(4.0));
+
+    CHECK(action.doProcessCommand(action.getStatus(), "cap none"));
+    CHECK(action.getCapType() == LC_WallMath::CapType::None);
+
+    CHECK(action.doProcessCommand(action.getStatus(), "cap flat"));
+    CHECK(action.getCapType() == LC_WallMath::CapType::Flat);
+}
+
+TEST_CASE("Wall action regression: Options persistence and sanitation", "[wall][action][regression]") {
+    WallActionFixture fixture;
+    auto& action = *fixture.m_action;
+
+    action.setThickness(25.0);
+    action.setMiterLimit(3.0);
+    action.setCapType(LC_WallMath::CapType::None);
+
+    action.doSaveOptions();
+
+    // Reset options on another action instance
+    WallActionFixture fixture2;
+    auto& action2 = *fixture2.m_action;
+    action2.doLoadOptions();
+
+    CHECK(action2.getThickness() == Approx(25.0));
+    CHECK(action2.getMiterLimit() == Approx(3.0));
+    CHECK(action2.getCapType() == LC_WallMath::CapType::None);
+
+    // Restore standard defaults
+    action.setThickness(10.0);
+    action.setMiterLimit(2.0);
+    action.setCapType(LC_WallMath::CapType::Flat);
+    action.doSaveOptions();
+}
+
 
 

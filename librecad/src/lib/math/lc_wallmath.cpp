@@ -71,72 +71,6 @@ struct BoundaryJoin {
     RS_Vector bevelEnd;
 };
 
-bool isSafeOuterMiter(const RS_Vector& miter,
-                      const RS_Vector& cornerVertex,
-                      const RS_Vector& pA,
-                      const RS_Vector& pB,
-                      const SegmentInfo& segA,
-                      const SegmentInfo& segB,
-                      double thickness,
-                      double miterLimit,
-                      double availExtentA,
-                      double availExtentB) {
-    if (!miter.isValid() || !std::isfinite(miter.x) || !std::isfinite(miter.y)) {
-        return false;
-    }
-    const double miterDist = cornerVertex.distanceTo(miter);
-    const double miterRatio = miterDist / thickness;
-    if (miterRatio > miterLimit) {
-        return false;
-    }
-
-    const double projA = (miter - pA).dotP(segA.dir);
-    const double projB = (pB - miter).dotP(segB.dir);
-
-    if (projA < -RS_TOLERANCE || projB < -RS_TOLERANCE) {
-        return false;
-    }
-
-    if (projA > availExtentA || (segA.length < thickness && miterDist > segA.length)) {
-        return false;
-    }
-    if (projB > availExtentB || (segB.length < thickness && miterDist > segB.length)) {
-        return false;
-    }
-
-    return true;
-}
-
-bool isSafeInnerMiter(const RS_Vector& miter,
-                      const RS_Vector& cornerVertex,
-                      const RS_Vector& pA,
-                      const RS_Vector& pB,
-                      const SegmentInfo& segA,
-                      const SegmentInfo& segB,
-                      double thickness,
-                      double availExtentA,
-                      double availExtentB) {
-    if (!miter.isValid() || !std::isfinite(miter.x) || !std::isfinite(miter.y)) {
-        return false;
-    }
-    const double innerDist = cornerVertex.distanceTo(miter);
-    if (innerDist > MAX_INNER_MITER_RATIO * thickness) {
-        return false;
-    }
-    const double shiftA = (pA - miter).dotP(segA.dir);
-    const double shiftB = (miter - pB).dotP(segB.dir);
-
-    if (shiftA < -RS_TOLERANCE || shiftB < -RS_TOLERANCE) {
-        return false;
-    }
-
-    if (shiftA >= availExtentA - RS_TOLERANCE || shiftB >= availExtentB - RS_TOLERANCE) {
-        return false;
-    }
-
-    return true;
-}
-
 } // anonymous namespace
 
 bool LC_WallMath::WallGeometry::isValid() const {
@@ -175,18 +109,13 @@ bool LC_WallMath::WallGeometry::isValid() const {
         }
     }
 
-    // 3. For closed boundary loops, verify closure continuity
-    if (caps.empty()) {
-        const bool leftCloses = leftBoundary.back().endpoint.distanceTo(leftBoundary.front().startpoint) <= RS_TOLERANCE;
-        const bool rightCloses = rightBoundary.back().endpoint.distanceTo(rightBoundary.front().startpoint) <= RS_TOLERANCE;
-        if (leftCloses != rightCloses) {
-            return false;
-        }
-    }
+    // 3. Segment intersection helpers
+    auto orient = [](const RS_Vector& a, const RS_Vector& b, const RS_Vector& c) -> double {
+        return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    };
 
-    // 4. Proper segment intersection helper to detect self-intersections and crossovers
-    auto segmentsIntersect = [](const RS_Vector& p1, const RS_Vector& p2,
-                                const RS_Vector& p3, const RS_Vector& p4) -> bool {
+    auto strictInteriorIntersect = [&](const RS_Vector& p1, const RS_Vector& p2,
+                                       const RS_Vector& p3, const RS_Vector& p4) -> bool {
         const double minX12 = std::min(p1.x, p2.x) - RS_TOLERANCE;
         const double maxX12 = std::max(p1.x, p2.x) + RS_TOLERANCE;
         const double minX34 = std::min(p3.x, p4.x) - RS_TOLERANCE;
@@ -199,8 +128,26 @@ bool LC_WallMath::WallGeometry::isValid() const {
         const double maxY34 = std::max(p3.y, p4.y) + RS_TOLERANCE;
         if (maxY12 < minY34 || maxY34 < minY12) return false;
 
-        auto orient = [](const RS_Vector& a, const RS_Vector& b, const RS_Vector& c) -> double {
-            return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        const double o1 = orient(p1, p2, p3);
+        const double o2 = orient(p1, p2, p4);
+        const double o3 = orient(p3, p4, p1);
+        const double o4 = orient(p3, p4, p2);
+
+        return (((o1 > RS_TOLERANCE && o2 < -RS_TOLERANCE) || (o1 < -RS_TOLERANCE && o2 > RS_TOLERANCE)) &&
+                ((o3 > RS_TOLERANCE && o4 < -RS_TOLERANCE) || (o3 < -RS_TOLERANCE && o4 > RS_TOLERANCE)));
+    };
+
+    auto segmentsIntersect = [&](const RS_Vector& p1, const RS_Vector& p2,
+                                 const RS_Vector& p3, const RS_Vector& p4) -> bool {
+        if (strictInteriorIntersect(p1, p2, p3, p4)) {
+            return true;
+        }
+
+        auto pointOnSegment = [](const RS_Vector& pt, const RS_Vector& a, const RS_Vector& b) -> bool {
+            return pt.x >= std::min(a.x, b.x) - RS_TOLERANCE &&
+                   pt.x <= std::max(a.x, b.x) + RS_TOLERANCE &&
+                   pt.y >= std::min(a.y, b.y) - RS_TOLERANCE &&
+                   pt.y <= std::max(a.y, b.y) + RS_TOLERANCE;
         };
 
         const double o1 = orient(p1, p2, p3);
@@ -208,16 +155,23 @@ bool LC_WallMath::WallGeometry::isValid() const {
         const double o3 = orient(p3, p4, p1);
         const double o4 = orient(p3, p4, p2);
 
-        if (((o1 > RS_TOLERANCE && o2 < -RS_TOLERANCE) || (o1 < -RS_TOLERANCE && o2 > RS_TOLERANCE)) &&
-            ((o3 > RS_TOLERANCE && o4 < -RS_TOLERANCE) || (o3 < -RS_TOLERANCE && o4 > RS_TOLERANCE))) {
-            return true;
-        }
+        if (std::abs(o1) <= RS_TOLERANCE && pointOnSegment(p3, p1, p2)) return true;
+        if (std::abs(o2) <= RS_TOLERANCE && pointOnSegment(p4, p1, p2)) return true;
+        if (std::abs(o3) <= RS_TOLERANCE && pointOnSegment(p1, p3, p4)) return true;
+        if (std::abs(o4) <= RS_TOLERANCE && pointOnSegment(p2, p3, p4)) return true;
+
         return false;
     };
 
-    // 5. Check boundary self-intersection and crossover
-    if (caps.empty()) {
-        // For closed paths, neither boundary loop may self-intersect
+    if (isClosed) {
+        // 4. For closed boundary loops, verify both loops close and have no caps
+        const bool leftCloses = leftBoundary.back().endpoint.distanceTo(leftBoundary.front().startpoint) <= RS_TOLERANCE;
+        const bool rightCloses = rightBoundary.back().endpoint.distanceTo(rightBoundary.front().startpoint) <= RS_TOLERANCE;
+        if (!leftCloses || !rightCloses || !caps.empty()) {
+            return false;
+        }
+
+        // Boundary self-intersections (non-adjacent segments)
         for (size_t i = 0; i < leftBoundary.size(); ++i) {
             for (size_t j = i + 2; j < leftBoundary.size(); ++j) {
                 if (i == 0 && j == leftBoundary.size() - 1) {
@@ -251,11 +205,29 @@ bool LC_WallMath::WallGeometry::isValid() const {
             }
         }
     } else {
-        // For open paths, check that corresponding segment boundaries do not cross over
+        // 4. For open paths, check that corresponding segment boundaries do not cross over
         const size_t nSegs = std::min(leftBoundary.size(), rightBoundary.size());
         for (size_t i = 0; i < nSegs; ++i) {
             if (segmentsIntersect(leftBoundary[i].startpoint, leftBoundary[i].endpoint,
                                   rightBoundary[i].startpoint, rightBoundary[i].endpoint)) {
+                return false;
+            }
+        }
+
+        // Verify cap continuity and non-intersection if caps are present
+        if (!caps.empty()) {
+            if (caps.size() != 2) {
+                return false;
+            }
+            if (caps[0].startpoint.distanceTo(rightBoundary.front().startpoint) > RS_TOLERANCE ||
+                caps[0].endpoint.distanceTo(leftBoundary.front().startpoint) > RS_TOLERANCE) {
+                return false;
+            }
+            if (caps[1].startpoint.distanceTo(leftBoundary.back().endpoint) > RS_TOLERANCE ||
+                caps[1].endpoint.distanceTo(rightBoundary.back().endpoint) > RS_TOLERANCE) {
+                return false;
+            }
+            if (segmentsIntersect(caps[0].startpoint, caps[0].endpoint, caps[1].startpoint, caps[1].endpoint)) {
                 return false;
             }
         }
@@ -373,6 +345,7 @@ LC_WallMath::WallGeometry LC_WallMath::generateWall(const std::vector<RS_Vector>
     }
 
     WallGeometry result;
+    result.isClosed = options.isClosed;
 
     // Helper lambda to construct a boundary (Left or Right)
     auto buildBoundary = [&](bool isLeft) -> bool {

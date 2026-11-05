@@ -802,4 +802,58 @@ TEST_CASE("WallMath Regression E: Short first, intermediate, final, and closure 
     }
 }
 
+TEST_CASE("WallMath: Closed wall continuity and cap validation", "[wall][regression]") {
+    SECTION("Closed wall with unclosed boundaries is rejected") {
+        LC_WallMath::WallGeometry unclosed;
+        unclosed.isClosed = true;
+        unclosed.leftBoundary = {
+            {{0.0, 5.0}, {100.0, 5.0}},
+            {{100.0, 5.0}, {100.0, 50.0}},
+            {{100.0, 50.0}, {0.0, 50.0}}
+        };
+        unclosed.rightBoundary = {
+            {{0.0, -5.0}, {100.0, -5.0}},
+            {{100.0, -5.0}, {100.0, -50.0}},
+            {{100.0, -50.0}, {0.0, -50.0}}
+        };
+        CHECK_FALSE(unclosed.isValid());
+    }
+
+    SECTION("Closed wall with caps is rejected") {
+        const std::vector<RS_Vector> center = {
+            {0.0, 0.0}, {100.0, 0.0}, {100.0, 100.0}, {0.0, 100.0}
+        };
+        LC_WallMath::WallOptions options;
+        options.thickness = 10.0;
+        options.isClosed = true;
+        auto wall = LC_WallMath::generateWall(center, options);
+        REQUIRE(wall.isValid());
+        wall.caps.push_back({{0.0, 5.0}, {0.0, -5.0}});
+        CHECK_FALSE(wall.isValid());
+    }
+
+    SECTION("Open wall with CapType::None is valid") {
+        const std::vector<RS_Vector> center = {{0.0, 0.0}, {100.0, 0.0}, {100.0, 100.0}};
+        LC_WallMath::WallOptions options;
+        options.thickness = 10.0;
+        options.isClosed = false;
+        options.capType = LC_WallMath::CapType::None;
+        const auto wall = LC_WallMath::generateWall(center, options);
+        REQUIRE(wall.isValid());
+        CHECK(wall.caps.empty());
+        CHECK(wall.leftBoundary.size() == 2);
+        CHECK(wall.rightBoundary.size() == 2);
+    }
+
+    SECTION("Open wall with intersecting caps is rejected") {
+        const std::vector<RS_Vector> center = {{0.0, 0.0}, {100.0, 0.0}};
+        auto wall = LC_WallMath::generateWall(center, 10.0, LC_WallMath::CapType::Flat);
+        REQUIRE(wall.isValid());
+        REQUIRE(wall.caps.size() == 2);
+        std::swap(wall.caps[0].startpoint, wall.caps[1].startpoint);
+        CHECK_FALSE(wall.isValid());
+    }
+}
+
+
 

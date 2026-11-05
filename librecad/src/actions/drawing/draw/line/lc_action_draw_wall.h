@@ -49,6 +49,8 @@ public:
     explicit LC_ActionDrawWall(LC_ActionContext* actionContext);
     ~LC_ActionDrawWall() override = default;
 
+    RS2::ActionType rtti() const override;
+
     void init(int status) override;
     void updateActionPrompt() override;
     QStringList getAvailableCommands() override;

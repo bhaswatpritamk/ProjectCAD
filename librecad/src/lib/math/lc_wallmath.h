@@ -76,6 +76,7 @@ public:
         std::vector<RS_LineData> leftBoundary;
         std::vector<RS_LineData> rightBoundary;
         std::vector<RS_LineData> caps;
+        bool isClosed = false;
 
         /**
          * @brief Combines all boundary and cap lines into a single list of line data.
